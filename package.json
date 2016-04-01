@@ -1,0 +1,32 @@
+{
+  "name": "node-cqrs-rabbitmq",
+  "version": "0.1.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "mocha -R list ./tests/index.js",
+    "debug": "mocha -R spec --watch ./tests/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@bitbucket.org/cqrs/node-cqrs-rabbitmq.git"
+  },
+  "keywords": [
+    "CQRS",
+    "ES6",
+    "framework",
+    "rabbitmq"
+  ],
+  "author": "@stas_natalenko",
+  "license": "MIT",
+  "homepage": "https://bitbucket.org/cqrs/node-cqrs-rabbitmq#readme",
+  "devDependencies": {
+    "chai": "^3.2.0",
+    "mocha": "^2.3.0"
+  },
+  "dependencies": {
+    "amqplib": "^0.4.1",
+    "debug": "^2.2.0",
+    "uuid": "^2.0.1"
+  }
+}
