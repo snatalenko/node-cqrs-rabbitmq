@@ -1,3 +1,7 @@
+# Project Assets
+# ==============
+credentials.json
+
 # Node and related ecosystem
 # ==========================
 .nodemonignore
