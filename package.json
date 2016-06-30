@@ -4,8 +4,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "mocha -R list ./tests/index.js",
-    "debug": "mocha -R spec --watch ./tests/index.js"
+    "test": "NODE_ENV=test mocha -R list ./tests/unit/",
+    "test-debug": "NODE_ENV=test mocha -R spec --watch ./tests/unit/",
+    "test-integration": "NODE_ENV=test mocha ./tests/integration/",
+    "test-integration-debug": "NODE_ENV=test mocha --watch ./tests/integration/",
+    "release-patch": "npm version patch && git push --all && git push --tags",
+    "release-minor": "npm version minor && git push --all && git push --tags"
   },
   "repository": {
     "type": "git",
