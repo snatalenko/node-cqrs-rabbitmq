@@ -5,11 +5,10 @@ const uuid = require('uuid');
 const debug = require('debug');
 const reconnect = require('./reconnect');
 
-const DEFAULT_PREFETCH = 100;
 const _channel = Symbol('channel');
 const _queueName = Symbol('queue');
 const _handlers = Symbol('consumers');
-const _consumerTag = Symbol('consumerTag');
+const _options = Symbol('options');
 
 
 /**
@@ -95,68 +94,95 @@ function decodePayload(content, contentType) {
 }
 
 
-function setupQueueExchange(channel, queueName, exchangeName) {
+/**
+ * Creates queue
+ *
+ * @template TChannel
+ * @param {TChannel} channel
+ * @param {string} queueName
+ * @param {{durable:boolean, exclusive:boolean, deadLetterExchange:string}} options
+ * @param {function(string):void} debug
+ * @returns {PromiseLike<{channel:TChannel, queueName:string}>}
+ */
+function assertQueue(channel, queueName, options, debug) {
 	if (!channel) throw new TypeError('channel argument required');
 	if (typeof queueName !== 'string' || !queueName.length) throw new TypeError('queueName argument must be a non-empty String');
-	if (typeof exchangeName !== 'string' || !exchangeName.length) throw new TypeError('exchangeName argument must be a non-empty String');
+	if (!options) throw new TypeError('options argument required');
+	if (typeof debug !== 'function') throw new TypeError('debug argument must be a Function');
 
-	// amq.direct -- delivers messages to queues based on the message routing key
-	// amq.fanout -- broadcasts all the messages it receives to all the queues it knows
-	// amq.topic
+	debug(`asserting queue '${queueName}'...`);
 
-	return Promise.resolve()
-		.then(() => channel.assertExchange(exchangeName, 'fanout'))
-		.then(() => channel.bindQueue(queueName, exchangeName /*, pattern */));
-}
-
-function setupDeadLetterQueue(channel, queueName) {
-	if (!channel) throw new TypeError('channel argument required');
-	if (typeof queueName !== 'string' || !queueName.length) throw new TypeError('name argument must be a non-empty String');
-
-	return Promise.resolve()
-		.then(() => channel.assertQueue(queueName, { durable: true }))
-		.then(() => setupQueueExchange(channel, queueName, queueName));
+	return Promise.all([
+		channel.assertQueue(queueName, options),
+		options.deadLetterExchange ? assertDeadLetterExchange(channel, options.deadLetterExchange, debug) : undefined
+	]).then(r => {
+		if (r[0]) {
+			debug(`queue '${r[0].queue}' asserted, ${r[0].messageCount} messages, ${r[0].consumerCount} consumers`);
+			queueName = r[0].queue;
+		}
+		return { channel, queueName };
+	});
 }
 
 /**
- * Setup main queue, dead-letter queue and consumer
+ * Asserts exchange and binds a ginen queue to it
  *
- * @param {object} channel
- * @param {{queue: string, queuePrefix: string, durable: boolean}} options
- * @param {function(object):PromiseLike<void>} handler
+ * @template TChannel
+ * @param {TChannel} channel
+ * @param {string} queueName
+ * @param {string} exchangeName
  * @param {function(string):void} debug
- * @returns {{queue:string, consumerTag: string, channel: object}}
+ * @returns {PromiseLike<TChannel>}
  */
-function setupQueue(channel, options, handler, debug) {
+function assertExchange(channel, queueName, exchangeName, debug) {
 	if (!channel) throw new TypeError('channel argument required');
-	if (!options) throw new TypeError('options argument required');
-	if (typeof handler !== 'function') throw new TypeError('handler argument must be a Function');
+	if (typeof queueName !== 'string' || !queueName.length) throw new TypeError('queueName argument must be a non-empty String');
+	if (typeof exchangeName !== 'string' || !exchangeName.length) throw new TypeError('exchangeName argument must be a non-empty String');
 	if (typeof debug !== 'function') throw new TypeError('debug argument must be a Function');
 
-	// if empty, a random name will be assigned by server
-	const queueName = options.queue || (options.queuePrefix ? options.queuePrefix + uuid.v4().replace(/-/g, '') : undefined);
-	// will survive broker restarts
-	const durable = options.durable || false;
-	// scoped to connection
-	const exclusive = !options.queue;
-	// an exchange to which messages discarded from the queue will be resent
-	const deadLetterExchange = options.durable ? queueName + '.failed' : undefined;
+	debug(`asserting exchange '${exchangeName}' monitored by '${queueName}'...`);
 
-	const result = { channel };
+	return Promise.all([
+		channel.assertExchange(exchangeName, 'fanout'),
+		channel.bindQueue(queueName, exchangeName /*, pattern */),
+	]).then(() => channel);
+}
 
-	return Promise.resolve()
-		.then(() => deadLetterExchange ? setupDeadLetterQueue(channel, deadLetterExchange) : undefined)
-		.then(() => channel.assertQueue(queueName, { durable, exclusive, deadLetterExchange }))
-		.then(response => {
-			debug(`queue '${response.queue}' asserted, ${response.messageCount} messages, ${response.consumerCount} consumers`);
-			result.queue = response.queue;
-		})
-		.then(() => channel.consume(result.queue, handler))
-		.then(response => {
-			debug(`consumer set up as ${response.consumerTag}`);
-			result.consumerTag = response.consumerTag;
-		})
-		.then(() => result);
+/**
+ * Asserts dead letter exchange with a durable queue for failed messages
+ *
+ * @param {TChannel} channel
+ * @param {string} deadLetterExchange
+ * @param {function(string):void} debug
+ * @returns {PromiseLike<TChannel>}
+ */
+function assertDeadLetterExchange(channel, deadLetterExchange, debug) {
+	if (!channel) throw new TypeError('channel argument required');
+	if (typeof deadLetterExchange !== 'string' || !deadLetterExchange.length)
+		throw new TypeError('deadLetterExchange argument must be a non-empty String');
+	if (typeof debug !== 'function') throw new TypeError('debug argument must be a Function');
+
+	return Promise.resolve(channel)
+		.then(channel => assertQueue(channel, deadLetterExchange, { durable: true }, debug))
+		.then(({channel}) => assertExchange(channel, deadLetterExchange, deadLetterExchange, debug));
+}
+
+/**
+ * Subscribes the channel to the given queue
+ *
+ * @param {string} queueName
+ * @param {any} handler
+ * @param {function(string):void} debug
+ * @returns {function(object):PromiseLike<object>}
+ */
+function assertConsumer(channel, queueName, handler, debug) {
+
+	debug(`subscribing to queue '${queueName}'...`);
+
+	return channel.consume(queueName, handler).then(response => {
+		debug(`consumer set up as ${response.consumerTag}`);
+		return channel;
+	});
 }
 
 
@@ -164,6 +190,10 @@ module.exports = class RabbitMqBus {
 
 	get channel() {
 		return this[_channel];
+	}
+
+	get queueName() {
+		return this[_queueName];
 	}
 
 	/**
@@ -180,9 +210,17 @@ module.exports = class RabbitMqBus {
 
 		this._appId = options.appId || undefined;
 		this._debug = debug('cqrs:RabbitMqBus' + (this._appId ? ':' + this._appId : ''));
-
-		this[_handlers] = {};
 		this._handle = this._handle.bind(this);
+
+		this[_queueName] = options.queue || options.queuePrefix && (options.queuePrefix + uuid.v4().replace(/-/g, '')) || undefined;
+		this[_options] = {
+			// will survive broker restarts
+			durable: options.durable || false,
+			// scoped to connection
+			exclusive: !options.queue,
+			// an exchange to which messages discarded from the queue will be resent
+			deadLetterExchange: options.durable ? this.queueName + '.failed' : undefined
+		};
 
 		this._debug(`connecting to ${reconnect.mask(options.connectionString)}...`);
 
@@ -190,25 +228,42 @@ module.exports = class RabbitMqBus {
 			.then(connection => connection.createConfirmChannel())
 			.then(channel => {
 				this._debug('connected, channel created');
-				channel.prefetch('prefetch' in options ? options.prefetch : DEFAULT_PREFETCH);
+				if ('prefetch' in options)
+					channel.prefetch(options.prefetch);
 				return channel;
-			})
-			.then(channel => setupQueue(channel, options, this._handle, this._debug))
-			.then(result => {
-				this[_queueName] = result.queue;
-				this[_consumerTag] = result.consumerTag;
-				return result.channel;
-			})
-			.catch(err => this._debug(err));
+			});
 	}
 
 	on(messageType, handler) {
 		if (typeof messageType !== 'string' || !messageType.length) throw new TypeError('messageType argument must be a non-empty String');
 		if (typeof handler !== 'function') throw new TypeError('handler argument must be a Function');
 
-		(this[_handlers][messageType] || (this[_handlers][messageType] = [])).push(handler);
 
-		return this.channel.then(ch => setupQueueExchange(ch, this[_queueName], messageType)).catch(err => {
+		let subscribeSequence = this.channel;
+
+		if (!this[_handlers]) {
+			this[_handlers] = {};
+
+			subscribeSequence = subscribeSequence
+				.then(channel => assertQueue(channel, this.queueName, this[_options], this._debug))
+				.then(({channel, queueName}) => {
+					this[_queueName] = queueName;
+					return channel;
+				})
+				.then(channel => assertConsumer(channel, this.queueName, this._handle, this._debug));
+		}
+
+		if (!(messageType in this[_handlers])) {
+			this[_handlers][messageType] = [handler];
+
+			subscribeSequence = subscribeSequence
+				.then(channel => assertExchange(channel, this.queueName, messageType, this._debug));
+		}
+		else {
+			this[_handlers][messageType].push(handler);
+		}
+
+		return subscribeSequence.catch(err => {
 			this._debug(err);
 			throw err;
 		});
