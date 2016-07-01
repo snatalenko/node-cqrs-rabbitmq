@@ -288,7 +288,8 @@ module.exports = class RabbitMqBus {
 					this._debug(`'${msgId}' acknowledged`);
 				});
 			}, err => {
-				this._debug(`'${msgId}' processing failed: %j`, err);
+				this._debug(`'${msgId}' processing failed: %s`, err && err.message);
+				this._debug(err);
 
 				// second argument indicates whether the message will be re-routed to another channel
 				return this.channel.then(channel => channel.reject(message, false)).then(() => {
