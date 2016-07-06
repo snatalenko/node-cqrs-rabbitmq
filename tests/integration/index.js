@@ -1,5 +1,6 @@
 'use strict';
 
+// require('debug').enable('cqrs:RabbitMqBus:sagas1');
 require('debug').enable('*');
 
 const RabbitMqBus = require('../..');
@@ -9,7 +10,7 @@ const {expect} = require('chai');
 describe('RabbitMqBus', function () {
 
 	this.timeout(60000);
-	this.slow(0);
+	this.slow(2000);
 
 	let services1CommandsRejected = [];
 	let services2CommandsHandled = [];
@@ -17,12 +18,13 @@ describe('RabbitMqBus', function () {
 	let services1;
 	let services2;
 	let sagas1;
+	let api;
 
 	before(() => {
-		services1 = new RabbitMqBus({ connectionString, queue: 'services', durable: true, prefetch: 1, appId: 'services1' });
-		services2 = new RabbitMqBus({ connectionString, queue: 'services', durable: true, prefetch: 1, appId: 'services2' });
+		services1 = new RabbitMqBus({ connectionString, queue: 'services', durable: true, appId: 'services1' });
+		services2 = new RabbitMqBus({ connectionString, queue: 'services', durable: true, appId: 'services2' });
 		sagas1 = new RabbitMqBus({ connectionString, queue: 'sagas', durable: false, appId: 'sagas1' });
-
+		api = new RabbitMqBus({ connectionString, appId: 'api' });
 
 		return Promise.all([
 			sagas1.channel,
@@ -56,10 +58,14 @@ describe('RabbitMqBus', function () {
 		sagaEventsHandled = [];
 		sagas1.on('processStarted', event => {
 			sagaEventsHandled.push(event);
-			sagas1.send({ type: 'doSomething', id: 'A' });
-			sagas1.send({ type: 'doSomething', id: 'B' });
-			sagas1.send({ type: 'doSomething', id: 'C' });
-			sagas1.send({ type: 'doSomething', id: 'D' });
+
+			return Promise.resolve()
+				.then(() => sagas1.send({ type: 'doSomething', id: 'A' }))
+				.then(() => sagas1.send({ type: 'doSomething', id: 'B' }))
+				.then(() => sagas1.send({ type: 'doSomething', id: 'C' }))
+				.then(() => sagas1.send({ type: 'doSomethingAwefull', id: 'ERR' }))
+				.catch(err => {})
+				.then(() => sagas1.send({ type: 'doSomething', id: 'D' }));
 		});
 
 		let timeout = 0;
@@ -79,7 +85,8 @@ describe('RabbitMqBus', function () {
 			}, 500);
 		});
 
-		services1.publish({ type: 'processStarted' });
-
+		setTimeout(() => {
+			api.publish({ type: 'processStarted' });
+		}, 300);
 	});
 });

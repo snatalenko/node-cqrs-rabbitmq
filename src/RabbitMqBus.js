@@ -5,10 +5,21 @@ const uuid = require('uuid');
 const debug = require('debug');
 const reconnect = require('./reconnect');
 
-const _channel = Symbol('channel');
+// http://www.squaremobius.net/amqp.node/channel_api.html#channel_publish
+const DEFAULT_ROUTE = '';
+const DEFAULT_MESSAGE_PROPS = {
+	persistent: true,
+	contentType: 'application/json',
+	contentEncoding: 'utf8'
+};
+
+const _connectionPromise = Symbol('connection');
+const _subChannelPromise = Symbol('sub channel');
+const _subChannelPrefetch = Symbol('sub channel prefetch');
+const _pubChannelPromise = Symbol('pub channel');
 const _queueName = Symbol('queue');
 const _handlers = Symbol('consumers');
-const _options = Symbol('options');
+const _queueOptions = Symbol('options');
 
 
 /**
@@ -43,33 +54,33 @@ function publish(channel, message, appId, debug) {
 	if (appId && typeof appId !== 'string') throw new TypeError('appId argument, when provided, must be a String');
 	if (typeof debug !== 'function') throw new TypeError('debug argument must be a Function');
 
-	return new Promise((rs, rj) => {
+	return new Promise(function (resolve, reject) {
 
-		const content = new Buffer(JSON.stringify(message), 'utf8');
-		const properties = {
-			// message will survive broker restarts, given it's placed in the durable message queue
-			persistent: true,
-			// priority: options && options.priority || DEFAULT_PRIORITY,
-			contentType: 'application/json',
-			contentEncoding: 'utf8',
-			// APP-SPECIFIC OPTIONAL FIELDS:
-			appId: appId,
+		const exchange = message.type;
+		const content = new Buffer(JSON.stringify(message), DEFAULT_MESSAGE_PROPS.contentEncoding);
+		const properties = Object.assign({}, DEFAULT_MESSAGE_PROPS, {
 			timestamp: Date.now(),
+			appId: appId,
 			type: message.type,
-			// replyTo: undefined,
-			// correlationId: undefined,
-			messageId: `${message.id || message._id || ''}` || undefined
-		};
+			messageId: message.id ? message.id.toString() :
+				message._id ? message._id.toString() : undefined,
+			correlationId: message.sagaId ? message.sagaId.toString() :
+				message.aggregateId ? message.aggregateId.toString() : undefined
+		});
 
-		const r = channel.publish(message.type, '', content, properties, (err, ok) => err ? rj(err) : rs(ok));
-		if (!r) {
-			rj(new Error(`channel.publish returned falsey value: ${r}`));
-		}
+		const writeResult = channel.publish(exchange, DEFAULT_ROUTE, content, properties, function (err, ok) {
+			if (err) reject(err);
+			else resolve(ok);
+		});
+
+		if (!writeResult)
+			throw new Error('Queue write did not succeed');
+
 	}).then(r => {
-		debug(`'${message.type}' acknowledged by queue`);
+		debug(`'${message.type}' acknowledged by the queue`);
+		return r;
 	}, err => {
-		debug(`'${message.type}' REJECTED by queue:`);
-		debug(err);
+		debug(`'${message.type}' could NOT be acknowledged by the queue: ${err && err.message || err}`);
 		throw err;
 	});
 }
@@ -188,10 +199,6 @@ function assertConsumer(channel, queueName, handler, debug) {
 
 module.exports = class RabbitMqBus {
 
-	get channel() {
-		return this[_channel];
-	}
-
 	get queueName() {
 		return this[_queueName];
 	}
@@ -213,7 +220,7 @@ module.exports = class RabbitMqBus {
 		this._handle = this._handle.bind(this);
 
 		this[_queueName] = options.queue || options.queuePrefix && (options.queuePrefix + uuid.v4().replace(/-/g, '')) || undefined;
-		this[_options] = {
+		this[_queueOptions] = {
 			// will survive broker restarts
 			durable: options.durable || false,
 			// scoped to connection
@@ -222,15 +229,56 @@ module.exports = class RabbitMqBus {
 			deadLetterExchange: options.durable ? this.queueName + '.failed' : undefined
 		};
 
-		this._debug(`connecting to ${reconnect.mask(options.connectionString)}...`);
+		this[_subChannelPrefetch] = options.prefetch || undefined;
 
-		this[_channel] = reconnect(() => amqp.connect(options.connectionString), null, null, this._debug)
-			.then(connection => connection.createConfirmChannel())
-			.then(channel => {
-				this._debug('connected, channel created');
-				if ('prefetch' in options)
-					channel.prefetch(options.prefetch);
-				return channel;
+		this._createConnection(options.connectionString);
+		this._createPubChannel();
+		this._createSubChannel();
+	}
+
+	_createConnection(connectionString) {
+		if (typeof connectionString !== 'string' || !connectionString.length) throw new TypeError('connectionString argument must be a non-empty String');
+
+		this._debug(`connecting to ${reconnect.mask(connectionString)}...`);
+		this[_connectionPromise] = reconnect(() => amqp.connect(connectionString), null, null, this._debug);
+		this[_connectionPromise].then(cn => {
+			this._debug(`connected to ${reconnect.mask(connectionString)}`);
+		});
+		return this[_connectionPromise];
+	}
+
+	_createPubChannel() {
+		this._debug('establishing publish channel...');
+		return this[_pubChannelPromise] = this[_connectionPromise]
+			.then(cn => cn.createConfirmChannel())
+			.then(ch => {
+				this._debug('publish channel established');
+				ch.on('error', this._onPubChannelError.bind(this, ch));
+				return ch;
+			});
+	}
+
+	_onPubChannelError(ch, err) {
+		this._debug('publish channel error:');
+		this._debug(err);
+
+		this._createPubChannel();
+
+		if (ch.unconfirmed.length) {
+			this._debug('%d awaiting acknowledgement callback(s) will timeout', ch.unconfirmed.length);
+			ch.unconfirmed.forEach(cb => cb(err));
+		}
+	}
+
+	_createSubChannel() {
+		this._debug('establishing subscribe channel...');
+		return this[_subChannelPromise] = this[_connectionPromise]
+			.then(cn => cn.createChannel())
+			.then(ch => {
+				this._debug('subscribe channel established');
+				if (this[_subChannelPrefetch])
+					ch.prefetch(this[_subChannelPrefetch]);
+				return ch;
 			});
 	}
 
@@ -239,13 +287,13 @@ module.exports = class RabbitMqBus {
 		if (typeof handler !== 'function') throw new TypeError('handler argument must be a Function');
 
 
-		let subscribeSequence = this.channel;
+		let subscribeSequence = this[_subChannelPromise];
 
 		if (!this[_handlers]) {
 			this[_handlers] = {};
 
 			subscribeSequence = subscribeSequence
-				.then(channel => assertQueue(channel, this.queueName, this[_options], this._debug))
+				.then(channel => assertQueue(channel, this.queueName, this[_queueOptions], this._debug))
 				.then(({channel, queueName}) => {
 					this[_queueName] = queueName;
 					return channel;
@@ -270,32 +318,25 @@ module.exports = class RabbitMqBus {
 	}
 
 	_handle(message) {
-		if (!message) {
-			this._debug('empty message received, ignoring');
-			return;
-		}
+		if (!message) return;
 
 		const msgId = descriptor(message);
+		const handlers = this[_handlers][message.properties.type];
 
-		this._debug(`'${msgId}' received`);
+		this._debug(`'${msgId}' received, passing to ${handlers.length === 1 ? '1 handler' : handlers.length + ' handlers'}...`);
 
 		return decodePayload(message.content, message.properties.contentType)
-			.then(payload => Promise.all(this[_handlers][message.properties.type].map(handler => handler(payload))))
+			.then(payload => Promise.all(handlers.map(h => h(payload))))
 			.then(results => {
-				this._debug(`'${msgId}' processed by ${results.length === 1 ? '1 handler' : results.length + ' handlers'}, acknowledging...`);
-
-				return this.channel.then(channel => channel.ack(message)).then(() => {
-					this._debug(`'${msgId}' acknowledged`);
-				});
+				this._debug(`'${msgId}' processed, will be acknowledged`);
+				return this[_subChannelPromise].then(channel => channel.ack(message));
 			}, err => {
-				this._debug(`'${msgId}' processing failed: %s`, err && err.message);
+				this._debug(`'${msgId}' processing failed, will be rejected: ${err && err.message || err || 'No reason specified'}`);
 				this._debug(err);
-
 				// second argument indicates whether the message will be re-routed to another channel
-				return this.channel.then(channel => channel.reject(message, false)).then(() => {
-					this._debug(`'${msgId}' rejected`);
-				});
-			});
+				return this[_subChannelPromise].then(channel => channel.reject(message, false));
+			})
+			.catch(this._debug);
 	}
 
 
@@ -328,7 +369,7 @@ module.exports = class RabbitMqBus {
 
 		this._debug(`sending ${command.type}...`);
 
-		return this.channel.then(ch => publish(ch, command, this._appId, this._debug));
+		return this[_pubChannelPromise].then(ch => publish(ch, command, this._appId, this._debug));
 	}
 
 	/**
@@ -343,6 +384,6 @@ module.exports = class RabbitMqBus {
 
 		this._debug(`publishing '${event.type}'...`);
 
-		return this.channel.then(ch => publish(ch, event, this._appId, this._debug));
+		return this[_pubChannelPromise].then(ch => publish(ch, event, this._appId, this._debug));
 	}
 };
