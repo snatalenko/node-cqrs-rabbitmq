@@ -322,6 +322,10 @@ module.exports = class RabbitMqBus {
 
 		const msgId = descriptor(message);
 		const handlers = this[_handlers][message.properties.type];
+		if (!handlers || handlers.length === 0) {
+			this._debug(`'${msgId}' received, no handlers configured`);
+			return;
+		}
 
 		this._debug(`'${msgId}' received, passing to ${handlers.length === 1 ? '1 handler' : handlers.length + ' handlers'}...`);
 
