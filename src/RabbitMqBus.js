@@ -60,7 +60,7 @@ function publish(channel, message, appId, debug) {
 		const content = new Buffer(JSON.stringify(message), DEFAULT_MESSAGE_PROPS.contentEncoding);
 		const properties = Object.assign({}, DEFAULT_MESSAGE_PROPS, {
 			timestamp: Date.now(),
-			appId: appId,
+			appId,
 			type: message.type,
 			messageId: message.id ? message.id.toString() :
 				message._id ? message._id.toString() : undefined,

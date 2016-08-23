@@ -4,7 +4,7 @@ RabbitMQ Message Bus for node-cqrs
 ## Usage
 
 ```bash
-npm i node-cqrs node-cqrs-rabbitmq --save
+npm install bitbucket:cqrs/node-cqrs bitbucket:cqrs/node-cqrs-rabbitmq --save
 ```
 
 A configured instance of RabbitMqBus must be passed in as "bus" option to the EventStore constructor:
@@ -22,13 +22,10 @@ const bus = new RabbitMqBus({
 	appId: 'my-app-id'
 });
 
-const eventStore = new EventStore({
-	storage, 
-	bus
-});
+const eventStore = new EventStore({ storage, bus });
 
 eventStore.commit([
-	{ type: 'somethingHappened', payload: {} }
+	{ aggreateId: 1, aggregateVersion: 1, type: 'somethingHappened', payload: {} }
 ]);
 ```
 
@@ -54,7 +51,7 @@ c.register(() => new RabbitMqBus({
 c.register(EventStore, 'eventStore');
 
 c.eventStore.commit([
-	{ type: 'somethingHappened', payload: {} }
+	{ aggreateId: 1, aggregateVersion: 1, type: 'somethingHappened', payload: {} }
 ]);
 ```
 
