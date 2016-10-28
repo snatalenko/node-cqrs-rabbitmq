@@ -1,7 +1,6 @@
 'use strict';
 
-// require('debug').enable('cqrs:RabbitMqBus:sagas1');
-require('debug').enable('*');
+require('debug').enable('cqrs:info:*');
 
 const RabbitMqBus = require('../..');
 const {connectionString} = require('./credentials');

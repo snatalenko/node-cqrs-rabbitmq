@@ -2,7 +2,7 @@
 
 const amqp = require('amqplib');
 const uuid = require('uuid');
-const debug = require('debug');
+const createLogger = require('debug');
 const reconnect = require('./reconnect');
 
 // http://www.squaremobius.net/amqp.node/channel_api.html#channel_publish
@@ -45,14 +45,15 @@ function descriptor(message) {
  * @param {object} channel
  * @param {{type:string}} message
  * @param {string} appId
- * @param {function(string):void} debug
+ * @param {{debug: function, info: function}} logger
  */
-function publish(channel, message, appId, debug) {
+function publish(channel, message, appId, logger) {
 	if (!channel) throw new TypeError('channel argument required');
 	if (!message) throw new TypeError('message argument required');
 	if (!message.type) throw new TypeError('message.type argument required');
 	if (appId && typeof appId !== 'string') throw new TypeError('appId argument, when provided, must be a String');
-	if (typeof debug !== 'function') throw new TypeError('debug argument must be a Function');
+	if (typeof logger !== 'object' || !logger) throw new TypeError('logger argument must be an Object');
+
 
 	return new Promise(function (resolve, reject) {
 
@@ -77,10 +78,10 @@ function publish(channel, message, appId, debug) {
 			throw new Error('Queue write did not succeed');
 
 	}).then(r => {
-		debug(`'${message.type}' acknowledged by the queue`);
+		logger.debug(`'${message.type}' acknowledged by the queue`);
 		return r;
 	}, err => {
-		debug(`'${message.type}' could NOT be acknowledged by the queue: ${err && err.message || err}`);
+		logger.info(`'${message.type}' could NOT be acknowledged by the queue: ${err && err.message || err}`);
 		throw err;
 	});
 }
@@ -112,23 +113,23 @@ function decodePayload(content, contentType) {
  * @param {TChannel} channel
  * @param {string} queueName
  * @param {{durable:boolean, exclusive:boolean, deadLetterExchange:string}} options
- * @param {function(string):void} debug
+ * @param {{debug: function, info: function}} logger
  * @returns {PromiseLike<{channel:TChannel, queueName:string}>}
  */
-function assertQueue(channel, queueName, options, debug) {
+function assertQueue(channel, queueName, options, logger) {
 	if (!channel) throw new TypeError('channel argument required');
 	if (typeof queueName !== 'string' || !queueName.length) throw new TypeError('queueName argument must be a non-empty String');
 	if (!options) throw new TypeError('options argument required');
-	if (typeof debug !== 'function') throw new TypeError('debug argument must be a Function');
+	if (typeof logger !== 'object' || !logger) throw new TypeError('logger argument must be an Object');
 
-	debug(`asserting queue '${queueName}'...`);
+	logger.debug(`asserting queue '${queueName}'...`);
 
 	return Promise.all([
 		channel.assertQueue(queueName, options),
-		options.deadLetterExchange ? assertDeadLetterExchange(channel, options.deadLetterExchange, debug) : undefined
+		options.deadLetterExchange ? assertDeadLetterExchange(channel, options.deadLetterExchange, logger) : undefined
 	]).then(r => {
 		if (r[0]) {
-			debug(`queue '${r[0].queue}' asserted, ${r[0].messageCount} messages, ${r[0].consumerCount} consumers`);
+			logger.debug(`queue '${r[0].queue}' asserted, ${r[0].messageCount} messages, ${r[0].consumerCount} consumers`);
 			queueName = r[0].queue;
 		}
 		return { channel, queueName };
@@ -142,16 +143,16 @@ function assertQueue(channel, queueName, options, debug) {
  * @param {TChannel} channel
  * @param {string} queueName
  * @param {string} exchangeName
- * @param {function(string):void} debug
+ * @param {{debug: function, info: function}} logger
  * @returns {PromiseLike<TChannel>}
  */
-function assertExchange(channel, queueName, exchangeName, debug) {
+function assertExchange(channel, queueName, exchangeName, logger) {
 	if (!channel) throw new TypeError('channel argument required');
 	if (typeof queueName !== 'string' || !queueName.length) throw new TypeError('queueName argument must be a non-empty String');
 	if (typeof exchangeName !== 'string' || !exchangeName.length) throw new TypeError('exchangeName argument must be a non-empty String');
-	if (typeof debug !== 'function') throw new TypeError('debug argument must be a Function');
+	if (typeof logger !== 'object' || !logger) throw new TypeError('logger argument must be an Object');
 
-	debug(`asserting exchange '${exchangeName}' monitored by '${queueName}'...`);
+	logger.debug(`asserting exchange '${exchangeName}' monitored by '${queueName}'...`);
 
 	return Promise.all([
 		channel.assertExchange(exchangeName, 'fanout'),
@@ -164,18 +165,18 @@ function assertExchange(channel, queueName, exchangeName, debug) {
  *
  * @param {TChannel} channel
  * @param {string} deadLetterExchange
- * @param {function(string):void} debug
+ * @param {{debug: function, info: function}} logger
  * @returns {PromiseLike<TChannel>}
  */
-function assertDeadLetterExchange(channel, deadLetterExchange, debug) {
+function assertDeadLetterExchange(channel, deadLetterExchange, logger) {
 	if (!channel) throw new TypeError('channel argument required');
 	if (typeof deadLetterExchange !== 'string' || !deadLetterExchange.length)
 		throw new TypeError('deadLetterExchange argument must be a non-empty String');
-	if (typeof debug !== 'function') throw new TypeError('debug argument must be a Function');
+	if (typeof logger !== 'object' || !logger) throw new TypeError('logger argument must be an Object');
 
 	return Promise.resolve(channel)
-		.then(channel => assertQueue(channel, deadLetterExchange, { durable: true }, debug))
-		.then(({channel}) => assertExchange(channel, deadLetterExchange, deadLetterExchange, debug));
+		.then(channel => assertQueue(channel, deadLetterExchange, { durable: true }, logger))
+		.then(({channel}) => assertExchange(channel, deadLetterExchange, deadLetterExchange, logger));
 }
 
 /**
@@ -183,15 +184,15 @@ function assertDeadLetterExchange(channel, deadLetterExchange, debug) {
  *
  * @param {string} queueName
  * @param {any} handler
- * @param {function(string):void} debug
+ * @param {{debug: function, info: function}} logger
  * @returns {function(object):PromiseLike<object>}
  */
-function assertConsumer(channel, queueName, handler, debug) {
+function assertConsumer(channel, queueName, handler, logger) {
 
-	debug(`subscribing to queue '${queueName}'...`);
+	logger.debug(`subscribing to queue '${queueName}'...`);
 
 	return channel.consume(queueName, handler).then(response => {
-		debug(`consumer set up as ${response.consumerTag}`);
+		logger.info(`consumer set up as ${response.consumerTag}`);
 		return channel;
 	});
 }
@@ -216,7 +217,10 @@ module.exports = class RabbitMqBus {
 			throw new TypeError('options.queue argument is required, when options.durable is true');
 
 		this._appId = options.appId || undefined;
-		this._debug = debug('cqrs:RabbitMqBus' + (this._appId ? ':' + this._appId : ''));
+		this._logger = {
+			debug: createLogger('cqrs:debug:rabbitmq' + (this._appId ? ':' + this._appId : '')),
+			info: createLogger('cqrs:info:rabbitmq' + (this._appId ? ':' + this._appId : ''))
+		};
 		this._handle = this._handle.bind(this);
 
 		this[_queueName] = options.queue || options.queuePrefix && (options.queuePrefix + uuid.v4().replace(/-/g, '')) || undefined;
@@ -239,43 +243,43 @@ module.exports = class RabbitMqBus {
 	_createConnection(connectionString) {
 		if (typeof connectionString !== 'string' || !connectionString.length) throw new TypeError('connectionString argument must be a non-empty String');
 
-		this._debug(`connecting to ${reconnect.mask(connectionString)}...`);
-		this[_connectionPromise] = reconnect(() => amqp.connect(connectionString), null, null, this._debug);
+		this._logger.debug(`connecting to ${reconnect.mask(connectionString)}...`);
+		this[_connectionPromise] = reconnect(() => amqp.connect(connectionString), null, null, this._logger.info);
 		this[_connectionPromise].then(cn => {
-			this._debug(`connected to ${reconnect.mask(connectionString)}`);
+			this._logger.info(`connected to ${reconnect.mask(connectionString)}`);
 		});
 		return this[_connectionPromise];
 	}
 
 	_createPubChannel() {
-		this._debug('establishing publish channel...');
+		this._logger.debug('establishing publish channel...');
 		return this[_pubChannelPromise] = this[_connectionPromise]
 			.then(cn => cn.createConfirmChannel())
 			.then(ch => {
-				this._debug('publish channel established');
+				this._logger.debug('publish channel established');
 				ch.on('error', this._onPubChannelError.bind(this, ch));
 				return ch;
 			});
 	}
 
 	_onPubChannelError(ch, err) {
-		this._debug('publish channel error:');
-		this._debug(err);
+		this._logger.info('publish channel error:');
+		this._logger.info(err);
 
 		this._createPubChannel();
 
 		if (ch.unconfirmed.length) {
-			this._debug('%d awaiting acknowledgement callback(s) will timeout', ch.unconfirmed.length);
+			this._logger.info('%d awaiting acknowledgement callback(s) will timeout', ch.unconfirmed.length);
 			ch.unconfirmed.forEach(cb => cb(err));
 		}
 	}
 
 	_createSubChannel() {
-		this._debug('establishing subscribe channel...');
+		this._logger.debug('establishing subscribe channel...');
 		return this[_subChannelPromise] = this[_connectionPromise]
 			.then(cn => cn.createChannel())
 			.then(ch => {
-				this._debug('subscribe channel established');
+				this._logger.debug('subscribe channel established');
 				if (this[_subChannelPrefetch])
 					ch.prefetch(this[_subChannelPrefetch]);
 				return ch;
@@ -293,26 +297,26 @@ module.exports = class RabbitMqBus {
 			this[_handlers] = {};
 
 			subscribeSequence = subscribeSequence
-				.then(channel => assertQueue(channel, this.queueName, this[_queueOptions], this._debug))
+				.then(channel => assertQueue(channel, this.queueName, this[_queueOptions], this._logger))
 				.then(({channel, queueName}) => {
 					this[_queueName] = queueName;
 					return channel;
 				})
-				.then(channel => assertConsumer(channel, this.queueName, this._handle, this._debug));
+				.then(channel => assertConsumer(channel, this.queueName, this._handle, this._logger));
 		}
 
 		if (!(messageType in this[_handlers])) {
 			this[_handlers][messageType] = [handler];
 
 			subscribeSequence = subscribeSequence
-				.then(channel => assertExchange(channel, this.queueName, messageType, this._debug));
+				.then(channel => assertExchange(channel, this.queueName, messageType, this._logger));
 		}
 		else {
 			this[_handlers][messageType].push(handler);
 		}
 
 		return subscribeSequence.catch(err => {
-			this._debug(err);
+			this._logger.info(err);
 			throw err;
 		});
 	}
@@ -323,24 +327,24 @@ module.exports = class RabbitMqBus {
 		const msgId = descriptor(message);
 		const handlers = this[_handlers][message.properties.type];
 		if (!handlers || handlers.length === 0) {
-			this._debug(`'${msgId}' received, no handlers configured`);
+			this._logger.info(`'${msgId}' received, no handlers configured`);
 			return;
 		}
 
-		this._debug(`'${msgId}' received, passing to ${handlers.length === 1 ? '1 handler' : handlers.length + ' handlers'}...`);
+		this._logger.debug(`'${msgId}' received, passing to ${handlers.length === 1 ? '1 handler' : handlers.length + ' handlers'}...`);
 
 		return decodePayload(message.content, message.properties.contentType)
 			.then(payload => Promise.all(handlers.map(h => h(payload))))
 			.then(results => {
-				this._debug(`'${msgId}' processed, will be acknowledged`);
+				this._logger.debug(`'${msgId}' processed, will be acknowledged`);
 				return this[_subChannelPromise].then(channel => channel.ack(message));
 			}, err => {
-				this._debug(`'${msgId}' processing failed, will be rejected: ${err && err.message || err || 'No reason specified'}`);
-				this._debug(err);
+				this._logger.info(`'${msgId}' processing failed, will be rejected: ${err && err.message || err || 'No reason specified'}`);
+				this._logger.info(err);
 				// second argument indicates whether the message will be re-routed to another channel
 				return this[_subChannelPromise].then(channel => channel.reject(message, false));
 			})
-			.catch(this._debug);
+			.catch(this._logger.info);
 	}
 
 
@@ -352,11 +356,11 @@ module.exports = class RabbitMqBus {
 	 */
 	off(messageType) {
 		if (messageType) {
-			this._debug(`unsubscribing from '${messageType}'`);
+			this._logger.debug(`unsubscribing from '${messageType}'`);
 			delete this[_handlers][messageType];
 		}
 		else {
-			this._debug('unsubscribing from all messages');
+			this._logger.debug('unsubscribing from all messages');
 			this[_handlers] = {};
 		}
 	}
@@ -371,9 +375,9 @@ module.exports = class RabbitMqBus {
 		if (!command) throw new TypeError('command argument required');
 		if (!command.type) throw new TypeError('command.type argument required');
 
-		this._debug(`sending ${command.type}...`);
+		this._logger.debug(`sending ${command.type}...`);
 
-		return this[_pubChannelPromise].then(ch => publish(ch, command, this._appId, this._debug));
+		return this[_pubChannelPromise].then(ch => publish(ch, command, this._appId, this._logger));
 	}
 
 	/**
@@ -386,8 +390,8 @@ module.exports = class RabbitMqBus {
 		if (!event) throw new TypeError('event argument required');
 		if (!event.type) throw new TypeError('event.type argument required');
 
-		this._debug(`publishing '${event.type}'...`);
+		this._logger.debug(`publishing '${event.type}'...`);
 
-		return this[_pubChannelPromise].then(ch => publish(ch, event, this._appId, this._debug));
+		return this[_pubChannelPromise].then(ch => publish(ch, event, this._appId, this._logger));
 	}
 };
