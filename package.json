@@ -4,10 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "eslint": "eslint src/**",
-    "pretest": "npm run eslint",
-    "test": "NODE_ENV=test mocha -R list ./tests/unit/",
-    "test:integration": "NODE_ENV=test mocha ./tests/integration/",
+    "lint": "eslint src/",
+    "pretest": "npm i",
+    "test": "NODE_ENV=test mocha ./tests/unit/",
+    "test:integration": "npm test && mocha ./tests/integration/",
     "release:patch": "npm version patch && git push --all && git push --tags",
     "release:minor": "npm version minor && git push --all && git push --tags"
   },
@@ -29,9 +29,9 @@
     "mocha": "^2.3.0"
   },
   "dependencies": {
-    "amqplib": "^0.4.1",
+    "amqplib": "^0.4.2",
     "debug": "^2.2.0",
     "node-cqrs": "bitbucket:cqrs/node-cqrs",
-    "uuid": "^2.0.1"
+    "uuid": "^2.0.3"
   }
 }
